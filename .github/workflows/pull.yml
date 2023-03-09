@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: TobKed/github-forks-sync-action@master
         with:
-          github_token: ${{ secrets.BOT_TOKEN }} # 令牌，创建时需要开启一定的仓库权限
+          github_token: ${{ secrets.FORK_TOKEN }} # 令牌，创建时需要开启一定的仓库权限
           upstream_repository: TBXark/ChatGPT-Telegram-Workers  # 上游仓库
           target_repository: ydwg/ChatGPT-Telegram-Workers  # 你的仓库
           upstream_branch: master  # 默认是拉取上游仓库的master分支
