@@ -1,4 +1,5 @@
-import {CONST, DATABASE} from './env.js';
+import {CONST, DATABASE, ENV} from './env.js';
+import {gpt3TokensCounter} from './gpt3.js';
 
 export function randomString(length) {
   const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -65,42 +66,52 @@ export function renderHTML(body) {
   `;
 }
 
-/**
- * 重试方法
- *
- * @param {Function} fn 异步方法
- * @param {int} maxAttemptCount 最大重试次数
- * @param {int} retryInterval 间隔时间ms,默认100ms
- * @return {Promise<any>}
- */
-export async function retry(fn, maxAttemptCount, retryInterval = 100) {
-  for (let i = 0; i < maxAttemptCount; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (i === maxAttemptCount - 1) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, retryInterval));
-    }
-  }
-}
-
-export async function catchWithDefault(defaultValue, fn) {
-  try {
-    const res = fn();
-    if (res instanceof Promise) {
-      return await res;
-    }
-    return res;
-  } catch (e) {
-    return defaultValue;
-  }
-}
-
 export function errorToString(e) {
   return JSON.stringify({
     message: e.message,
     stack: e.stack,
   });
+}
+
+
+export function mergeConfig(config, key, value) {
+  switch (typeof config[key]) {
+    case 'number':
+      config[key] = Number(value);
+      break;
+    case 'boolean':
+      config[key] = value === 'true';
+      break;
+    case 'string':
+      config[key] = value;
+      break;
+    case 'object':
+      const object = JSON.parse(value);
+      if (typeof object === 'object') {
+        config[key] = object;
+        break;
+      }
+      throw new Error('不支持的配置项或数据类型错误');
+    default:
+      throw new Error('不支持的配置项或数据类型错误');
+  }
+}
+
+export async function tokensCounter() {
+  let counter = (text) => Array.from(text).length;
+  try {
+    if (ENV.GPT3_TOKENS_COUNT) {
+      counter = await gpt3TokensCounter();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  return (text) => {
+    try {
+      return counter(text);
+    } catch (e) {
+      console.error(e);
+      return Array.from(text).length;
+    }
+  };
 }
