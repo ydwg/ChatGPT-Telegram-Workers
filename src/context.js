@@ -23,8 +23,9 @@ export class Context {
   CURRENT_CHAT_CONTEXT = {
     chat_id: null,
     reply_to_message_id: null, // 如果是群组，这个值为消息ID，否则为null
-    parse_mode: 'MarkdownV2',
-    editMessageId: null, // 编辑消息的ID
+    parse_mode: 'Markdown',
+    message_id: null, // 编辑消息的ID
+    reply_markup: null, // 回复键盘
   };
 
   // 共享上下文
@@ -187,5 +188,23 @@ export class Context {
     console.log(this.SHARE_CONTEXT);
     await this._initUserConfig(this.SHARE_CONTEXT.configStoreKey);
     console.log(this.USER_CONFIG);
+  }
+
+  /**
+   *
+   * @return {string|null}
+   */
+  openAIKeyFromContext() {
+    if (this.USER_CONFIG.OPENAI_API_KEY) {
+      return this.USER_CONFIG.OPENAI_API_KEY;
+    }
+    if (Array.isArray(ENV.API_KEY)) {
+      if (ENV.API_KEY.length === 0) {
+        return null;
+      }
+      return ENV.API_KEY[Math.floor(Math.random() * ENV.API_KEY.length)];
+    } else {
+      return ENV.API_KEY;
+    }
   }
 }

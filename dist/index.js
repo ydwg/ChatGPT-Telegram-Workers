@@ -43,9 +43,9 @@ var ENV = {
   // 检查更新的分支
   UPDATE_BRANCH: "master",
   // 当前版本
-  BUILD_TIMESTAMP: 1682088819,
+  BUILD_TIMESTAMP: 1683772162,
   // 当前版本 commit id
-  BUILD_VERSION: "2f3b9e9",
+  BUILD_VERSION: "70154d3",
   /**
   * @type {I18n}
   */
@@ -138,9 +138,11 @@ var Context = class {
     chat_id: null,
     reply_to_message_id: null,
     // 如果是群组，这个值为消息ID，否则为null
-    parse_mode: "MarkdownV2",
-    editMessageId: null
+    parse_mode: "Markdown",
+    message_id: null,
     // 编辑消息的ID
+    reply_markup: null
+    // 回复键盘
   };
   // 共享上下文
   SHARE_CONTEXT = {
@@ -281,76 +283,90 @@ var Context = class {
     await this._initUserConfig(this.SHARE_CONTEXT.configStoreKey);
     console.log(this.USER_CONFIG);
   }
+  /**
+   *
+   * @return {string|null}
+   */
+  openAIKeyFromContext() {
+    if (this.USER_CONFIG.OPENAI_API_KEY) {
+      return this.USER_CONFIG.OPENAI_API_KEY;
+    }
+    if (Array.isArray(ENV.API_KEY)) {
+      if (ENV.API_KEY.length === 0) {
+        return null;
+      }
+      return ENV.API_KEY[Math.floor(Math.random() * ENV.API_KEY.length)];
+    } else {
+      return ENV.API_KEY;
+    }
+  }
 };
 
 // src/telegram.js
 async function sendMessage(message, token, context) {
-  const editMessageId = context?.editMessageId;
-  if (editMessageId) {
+  let body = {
+    text: message
+  };
+  for (const key of Object.keys(context)) {
+    if (context[key] !== void 0 && context[key] !== null) {
+      body[key] = context[key];
+    }
+  }
+  body = JSON.stringify(body);
+  let method = "sendMessage";
+  if (context?.message_id) {
+    method = "editMessageText";
+  }
+  return await fetch(
+    `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/${method}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body
+    }
+  );
+}
+async function sendMessageToTelegram(message, token, context) {
+  const chatContext = context;
+  if (message.length <= 4096) {
+    const resp = await sendMessage(message, token, chatContext);
+    if (resp.status === 200) {
+      return resp;
+    } else {
+      chatContext.parse_mode = null;
+      return await sendMessage(message, token, chatContext);
+    }
+  }
+  const limit = 4096;
+  chatContext.parse_mode = null;
+  for (let i = 0; i < message.length; i += limit) {
+    const msg = message.slice(i, Math.min(i + limit, message.length));
+    await sendMessage(msg, token, chatContext);
+  }
+  return new Response("Message batch send", { status: 200 });
+}
+function sendMessageToTelegramWithContext(context) {
+  return async (message) => {
+    return sendMessageToTelegram(message, context.SHARE_CONTEXT.currentBotToken, context.CURRENT_CHAT_CONTEXT);
+  };
+}
+function deleteMessageFromTelegramWithContext(context) {
+  return async (messageId) => {
     return await fetch(
-      `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/editMessageText`,
+      `${ENV.TELEGRAM_API_DOMAIN}/bot${context.SHARE_CONTEXT.currentBotToken}/deleteMessage`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          ...context,
-          message_id: editMessageId,
-          text: message
+          chat_id: context.CURRENT_CHAT_CONTEXT.chat_id,
+          message_id: messageId
         })
       }
     );
-  }
-  return await fetch(
-    `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/sendMessage`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        ...context,
-        text: message
-      })
-    }
-  );
-}
-async function sendMessageToTelegram(message, token, context, withReplyMarkup) {
-  console.log("Send Message:\n", message);
-  const chatContext = context;
-  if (withReplyMarkup && ENV.SHOW_REPLY_BUTTON) {
-    chatContext.reply_markup = JSON.stringify({
-      keyboard: [[{ text: "/new" }, { text: "/redo" }]],
-      selective: true,
-      resize_keyboard: true,
-      one_time_keyboard: true
-    });
-  }
-  if (message.length <= 4096) {
-    const resp = await sendMessage(message, token, chatContext);
-    if (resp.status === 200) {
-      return resp;
-    } else {
-      chatContext.parse_mode = "HTML";
-      return await sendMessage(`<pre>
-${message}
-</pre>`, token, chatContext);
-    }
-  }
-  const limit = 4e3;
-  chatContext.parse_mode = "HTML";
-  for (let i = 0; i < message.length; i += limit) {
-    const msg = message.slice(i, i + limit);
-    await sendMessage(`<pre>
-${msg}
-</pre>`, token, chatContext);
-  }
-  return new Response("Message batch send", { status: 200 });
-}
-function sendMessageToTelegramWithContext(context, withReplyMarkup = false) {
-  return async (message) => {
-    return sendMessageToTelegram(message, context.SHARE_CONTEXT.currentBotToken, context.CURRENT_CHAT_CONTEXT, withReplyMarkup);
   };
 }
 async function sendPhotoToTelegram(url, token, context) {
@@ -774,16 +790,6 @@ function makeResponse200(resp) {
 }
 
 // src/openai.js
-function openAIKeyFromContext(context) {
-  if (context.USER_CONFIG.OPENAI_API_KEY) {
-    return context.USER_CONFIG.OPENAI_API_KEY;
-  }
-  if (Array.isArray(ENV.API_KEY)) {
-    return ENV.API_KEY[Math.floor(("0." + Math.sin((/* @__PURE__ */ new Date()).getTime()).toString().substring(6)) * ENV.API_KEY.length)];
-  } else {
-    return ENV.API_KEY;
-  }
-}
 function extractContentFromStreamData(stream) {
   const line = stream.split("\n");
   let remainingStr = "";
@@ -806,24 +812,27 @@ function extractContentFromStreamData(stream) {
   };
 }
 async function requestCompletionsFromOpenAI(message, history, context, onStream) {
-  console.log(`requestCompletionsFromOpenAI: ${message}`);
-  console.log(`history: ${JSON.stringify(history, null, 2)}`);
-  const key = openAIKeyFromContext(context);
+  const key = context.openAIKeyFromContext();
   const body = {
     model: ENV.CHAT_MODEL,
     ...context.USER_CONFIG.OPENAI_API_EXTRA_PARAMS,
     messages: [...history || [], { role: "user", content: message }],
     stream: onStream != null
   };
+  const controller = new AbortController();
+  const { signal } = controller;
+  const timeout = 1e3 * 60 * 5;
+  setTimeout(() => controller.abort(), timeout);
   let resp = await fetch(`${ENV.OPENAI_API_DOMAIN}/v1/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${key}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
-  if (onStream) {
+  if (onStream && resp.ok && resp.headers.get("content-type").indexOf("text/event-stream") !== -1) {
     const reader = resp.body.getReader({ mode: "byob" });
     const decoder = new TextDecoder("utf-8");
     let data = { done: false };
@@ -831,15 +840,25 @@ async function requestCompletionsFromOpenAI(message, history, context, onStream)
     let contentFull = "";
     let lengthDelta = 0;
     while (data.done === false) {
-      data = await reader.readAtLeast(4096, new Uint8Array(5e3));
-      pendingText += decoder.decode(data.value);
-      const content = extractContentFromStreamData(pendingText);
-      pendingText = content.pending;
-      lengthDelta += content.content.length;
-      contentFull = contentFull + content.content;
-      if (lengthDelta > 20) {
-        lengthDelta = 0;
-        await onStream(contentFull);
+      try {
+        data = await reader.readAtLeast(4096, new Uint8Array(5e3));
+        pendingText += decoder.decode(data.value);
+        const content = extractContentFromStreamData(pendingText);
+        pendingText = content.pending;
+        lengthDelta += content.content.length;
+        contentFull = contentFull + content.content;
+        if (lengthDelta > 20) {
+          lengthDelta = 0;
+          await onStream(contentFull);
+        }
+      } catch (e) {
+        contentFull += pendingText;
+        contentFull += `
+
+[ERROR]: ${e.message}
+
+`;
+        break;
       }
     }
     return contentFull;
@@ -859,8 +878,7 @@ Body: ${JSON.stringify(body)}`);
   return resp.choices[0].message.content;
 }
 async function requestImageFromOpenAI(prompt, context) {
-  console.log(`requestImageFromOpenAI: ${prompt}`);
-  const key = openAIKeyFromContext(context);
+  const key = context.openAIKeyFromContext();
   const body = {
     prompt,
     n: 1,
@@ -881,38 +899,34 @@ async function requestImageFromOpenAI(prompt, context) {
   return resp.data[0].url;
 }
 async function requestBill(context) {
-  const now = /* @__PURE__ */ new Date();
   const apiUrl = ENV.OPENAI_API_DOMAIN;
-  const key = openAIKeyFromContext(context);
-  let startDate = new Date(now - 90 * 24 * 60 * 60 * 1e3);
-  const endDate = new Date(now.getTime() + 24 * 60 * 60 * 1e3);
-  const subDate = new Date(now);
-  subDate.setDate(1);
-  const formatDate = (date) => {
+  const key = context.openAIKeyFromContext();
+  const date2Cmp = (date) => {
     const year = date.getFullYear();
     const month = (date.getMonth() + 1).toString().padStart(2, "0");
     const day = date.getDate().toString().padStart(2, "0");
-    return `${year}-${month}-${day}`;
+    return {
+      year,
+      month,
+      day
+    };
   };
-  const urlSubscription = `${apiUrl}/v1/dashboard/billing/subscription`;
-  let urlUsage = `${apiUrl}/v1/dashboard/billing/usage?start_date=${formatDate(startDate)}&end_date=${formatDate(endDate)}`;
+  const start = date2Cmp(/* @__PURE__ */ new Date());
+  const startDate = `${start.year}-${start.month}-01`;
+  const end = date2Cmp(new Date(Date.now() + 24 * 60 * 60 * 1e3));
+  const endDate = `${end.year}-${end.month}-${end.day}`;
+  const urlSub = `${apiUrl}/v1/dashboard/billing/subscription`;
+  const urlUsage = `${apiUrl}/v1/dashboard/billing/usage?start_date=${startDate}&end_date=${endDate}`;
   const headers = {
     "Authorization": "Bearer " + key,
     "Content-Type": "application/json"
   };
   try {
-    let response = await fetch(urlSubscription, { headers });
-    if (!response.ok) {
-      return {};
-    }
-    const subscriptionData = await response.json();
+    const subResp = await fetch(urlSub, { headers });
+    const subscriptionData = await subResp.json();
     const totalAmount = subscriptionData.hard_limit_usd;
-    if (totalAmount > 20) {
-      startDate = subDate;
-    }
-    urlUsage = `${apiUrl}/v1/dashboard/billing/usage?start_date=${formatDate(startDate)}&end_date=${formatDate(endDate)}`;
-    response = await fetch(urlUsage, { headers });
-    const usageData = await response.json();
+    const usageResp = await fetch(urlUsage, { headers });
+    const usageData = await usageResp.json();
     const totalUsage = usageData.total_usage / 100;
     const remaining = totalAmount - totalUsage;
     return {
@@ -1103,7 +1117,7 @@ var zh_hans_default = {
       "command_error": (e) => `\u547D\u4EE4\u6267\u884C\u9519\u8BEF: ${e.message}`
     },
     bill: {
-      "bill_detail": (totalAmount, totalUsage, remaining) => `\u{1F4CA} \u5F53\u524D\u673A\u5668\u4EBA\u7528\u91CF
+      "bill_detail": (totalAmount, totalUsage, remaining) => `\u{1F4CA} \u672C\u6708\u673A\u5668\u4EBA\u7528\u91CF
 
 	- \u603B\u989D\u5EA6: $${totalAmount || 0}
 	- \u5DF2\u4F7F\u7528: $${totalUsage || 0}
@@ -1186,7 +1200,7 @@ var zh_hant_default = {
       "command_error": (e) => `\u547D\u4EE4\u57F7\u884C\u51FA\u932F\uFF1A${e.message}`
     },
     bill: {
-      "bill_detail": (totalAmount, totalUsage, remaining) => `\u{1F4CA} \u5F53\u524D\u673A\u5668\u4EBA\u7528\u91CF
+      "bill_detail": (totalAmount, totalUsage, remaining) => `\u{1F4CA} \u672C\u6708\u673A\u5668\u4EBA\u7528\u91CF
 
 	- \u603B\u989D\u5EA6: $${totalAmount || 0}
 	- \u5DF2\u4F7F\u7528: $${totalUsage || 0}
@@ -1269,7 +1283,7 @@ var en_default = {
       "command_error": (e) => `Command execution error: ${e.message}`
     },
     bill: {
-      "bill_detail": (totalAmount, totalUsage, remaining) => `\u{1F4CA} Current robot usage
+      "bill_detail": (totalAmount, totalUsage, remaining) => `\u{1F4CA} This month usage
 
 	- Amount: $${totalAmount || 0}
 	- Usage: $${totalUsage || 0}
@@ -1299,10 +1313,10 @@ function i18n(lang) {
 // src/chat.js
 async function chatWithOpenAI(text, context, modifier) {
   try {
-    console.log("Ask:" + text || "");
     try {
       const msg = await sendMessageToTelegramWithContext(context)(ENV.I18N.message.loading, false).then((r) => r.json());
-      context.CURRENT_CHAT_CONTEXT.editMessageId = msg.result.message_id;
+      context.CURRENT_CHAT_CONTEXT.message_id = msg.result.message_id;
+      context.CURRENT_CHAT_CONTEXT.reply_markup = null;
     } catch (e) {
       console.error(e);
     }
@@ -1312,12 +1326,29 @@ async function chatWithOpenAI(text, context, modifier) {
     if (ENV.STREAM_MODE) {
       context.CURRENT_CHAT_CONTEXT.parse_mode = null;
       onStream = async (text2) => {
-        await sendMessageToTelegramWithContext(context, true)(text2);
+        const resp = await sendMessageToTelegramWithContext(context)(text2);
+        if (!context.CURRENT_CHAT_CONTEXT.message_id) {
+          context.CURRENT_CHAT_CONTEXT.message_id = (await resp.json()).result.message_id;
+        }
       };
     }
     const answer = await requestCompletionsFromChatGPT(text, context, modifier, onStream);
     context.CURRENT_CHAT_CONTEXT.parse_mode = parseMode;
-    return sendMessageToTelegramWithContext(context, true)(answer);
+    if (ENV.SHOW_REPLY_BUTTON && context.CURRENT_CHAT_CONTEXT.message_id) {
+      try {
+        await deleteMessageFromTelegramWithContext(context)(context.CURRENT_CHAT_CONTEXT.message_id);
+        context.CURRENT_CHAT_CONTEXT.message_id = null;
+        context.CURRENT_CHAT_CONTEXT.reply_markup = {
+          keyboard: [[{ text: "/new" }, { text: "/redo" }]],
+          selective: true,
+          resize_keyboard: true,
+          one_time_keyboard: true
+        };
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return sendMessageToTelegramWithContext(context)(answer);
   } catch (e) {
     return sendMessageToTelegramWithContext(context)(`Error: ${e.message}`);
   }
@@ -1782,7 +1813,7 @@ async function msgIgnoreOldMessage(message, context) {
   return null;
 }
 async function msgCheckEnvIsReady(message, context) {
-  if (!ENV.API_KEY || ENV.API_KEY.length === 0) {
+  if (context.openAIKeyFromContext() === null) {
     return sendMessageToTelegramWithContext(context)("OpenAI API Key Not Set");
   }
   if (!DATABASE) {
@@ -1953,7 +1984,6 @@ async function msgProcessByChatType(message, context) {
 }
 async function loadMessage(request, context) {
   const raw = await request.json();
-  console.log(JSON.stringify(raw));
   if (ENV.DEV_MODE) {
     setTimeout(() => {
       DATABASE.put(`log:${(/* @__PURE__ */ new Date()).toISOString()}`, JSON.stringify(raw), { expirationTtl: 600 }).catch(console.error);
